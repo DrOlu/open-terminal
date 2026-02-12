@@ -61,10 +61,25 @@ Output streams as JSONL:
 {"type": "exit", "data": 0}
 ```
 
+### Upload a File
+
+**From URL:**
+```bash
+curl -X POST "http://localhost:8000/files/upload?url=https://example.com/data.csv&path=/tmp/data.csv" \
+  -H "Authorization: Bearer <api-key>"
+```
+
+**Direct upload:**
+```bash
+curl -X POST "http://localhost:8000/files/upload?path=/tmp/data.csv" \
+  -H "Authorization: Bearer <api-key>" \
+  -F "file=@local_file.csv"
+```
+
 ### Download a File
 
 ```bash
-curl "http://localhost:8000/files?path=/tmp/output.csv" \
+curl "http://localhost:8000/files/download?path=/tmp/output.csv" \
   -H "Authorization: Bearer <api-key>"
 ```
 

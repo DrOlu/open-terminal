@@ -3,7 +3,7 @@ import json
 import os
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -74,7 +74,7 @@ _download_links: dict[str, tuple[str, float]] = {}
 
 
 @app.get(
-    "/files",
+    "/files/download",
     summary="Get a file download link",
     description="Returns a temporary download URL for a file. Link expires after 5 minutes and requires no authentication to use.",
     dependencies=[Depends(verify_api_key)],
@@ -123,6 +123,38 @@ async def download_file(token: str):
         raise HTTPException(status_code=404, detail="File not found")
 
     return FileResponse(path)
+
+
+@app.post(
+    "/files/upload",
+    summary="Upload a file",
+    description="Save a file to the specified path. Provide a `url` to fetch remotely, or send the file directly via multipart form data.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def upload_file(
+    path: str = Query(..., description="Absolute destination path for the file."),
+    url: Optional[str] = Query(None, description="URL to download the file from. If omitted, expects a multipart file upload."),
+    file: Optional[UploadFile] = File(None, description="The file to upload (if no URL provided)."),
+):
+    if url:
+        import httpx
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        content = resp.content
+    elif file:
+        content = await file.read()
+    else:
+        raise HTTPException(status_code=400, detail="Provide either 'url' or a file upload.")
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(content)
+    return {"path": path, "size": len(content)}
 
 
 @app.post(
