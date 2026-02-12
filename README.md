@@ -1,57 +1,36 @@
-# ⬛ Open Terminal
+# ⚡ Open Terminal
 
-A lightweight API for remote command execution with streaming support.
+A lightweight API for running shell commands remotely — with real-time streaming and secure access.
 
-## Quick Start
+## Getting Started
 
-### Run Locally
+### Docker (recommended)
 
 ```bash
-pip install .
-open-terminal run
+docker run -p 8000:8000 -e OPEN_TERMINAL_API_KEY=your-secret-key ghcr.io/open-webui/open-terminal
 ```
 
-### Docker
+If no API key is provided, one is auto-generated and printed on startup.
+
+### Build from Source
 
 ```bash
 docker build -t open-terminal .
 docker run -p 8000:8000 open-terminal
 ```
 
-An API key is auto-generated on startup if not provided. To set your own:
+## Usage
 
-```bash
-# via CLI flag
-open-terminal run --api-key my-secret
-
-# via environment variable
-docker run -p 8000:8000 -e OPEN_TERMINAL_API_KEY=my-secret open-terminal
-```
-
-## API
-
-### `GET /health`
-
-Health check — no auth required.
-
-### `POST /execute`
-
-Execute a command and return the result.
+### Run a Command
 
 ```bash
 curl -X POST http://localhost:8000/execute \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"command": "echo hello", "timeout": 30}'
+  -d '{"command": "echo hello"}'
 ```
 
-```json
-{"exit_code": 0, "stdout": "hello\n", "stderr": ""}
-```
-
-### `POST /execute?stream=true`
-
-Stream output as JSONL (`application/x-ndjson`):
+### Stream Output
 
 ```bash
 curl -X POST "http://localhost:8000/execute?stream=true" \
@@ -60,6 +39,8 @@ curl -X POST "http://localhost:8000/execute?stream=true" \
   -d '{"command": "for i in 1 2 3; do echo $i; sleep 1; done"}'
 ```
 
+Output streams as JSONL:
+
 ```jsonl
 {"type": "stdout", "data": "1\n"}
 {"type": "stdout", "data": "2\n"}
@@ -67,6 +48,23 @@ curl -X POST "http://localhost:8000/execute?stream=true" \
 {"type": "exit", "data": 0}
 ```
 
+### Download a File
+
+```bash
+curl "http://localhost:8000/files?path=/tmp/output.csv" \
+  -H "Authorization: Bearer <api-key>"
+```
+
+Returns a temporary download link (valid for 5 minutes, no auth needed):
+
+```json
+{"url": "http://localhost:8000/files/download/a1b2c3d4..."}
+```
+
+## API Docs
+
+Interactive API documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs).
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
