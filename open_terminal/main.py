@@ -1,18 +1,22 @@
 import asyncio
-import json
+import base64
 import os
 import platform
+import signal
 import socket
 import sys
+import time
+import uuid
+from dataclasses import dataclass, field
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from open_terminal.env import API_KEY
+from open_terminal.env import API_KEY, MAX_OUTPUT_LINES
 
 
 def get_system_info() -> str:
@@ -27,7 +31,7 @@ def get_system_info() -> str:
 
 
 _EXECUTE_DESCRIPTION = (
-    "Run a shell command and return the result.\n\n"
+    "Run a shell command in the background and return a command ID.\n\n"
     + get_system_info()
 )
 
@@ -45,8 +49,8 @@ async def verify_api_key(
 
 app = FastAPI(
     title="Open Terminal",
-    description="Shell command execution API with synchronous and streaming support.",
-    version="0.1.4",
+    description="A remote terminal API.",
+    version="0.2.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -57,27 +61,146 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
 class ExecRequest(BaseModel):
     command: str = Field(
         ...,
         description="Shell command to execute. Supports chaining (&&, ||, ;), pipes (|), and redirections.",
         json_schema_extra={"examples": ["echo hello", "ls -la && whoami"]},
     )
-    timeout: Optional[float] = Field(
-        30.0,
-        description="Max execution time in seconds. Process is killed if exceeded (exit_code: -1). Null to disable.",
-        ge=0,
+    cwd: Optional[str] = Field(
+        None,
+        description="Working directory for the command. Defaults to the server's current directory if not set.",
+    )
+    env: Optional[dict[str, str]] = Field(
+        None,
+        description="Extra environment variables merged into the subprocess environment.",
     )
 
 
-class ExecResponse(BaseModel):
-    exit_code: int = Field(
+class InputRequest(BaseModel):
+    input: str = Field(
         ...,
-        description="Process exit code. 0 = success, non-zero = error, -1 = timeout.",
+        description="Text to send to the process's stdin. Include newline characters as needed.",
     )
-    stdout: str = Field(..., description="Captured standard output.")
-    stderr: str = Field(..., description="Captured standard error.")
 
+
+class WriteRequest(BaseModel):
+    path: str = Field(
+        ...,
+        description="Absolute or relative path to write to. Parent directories are created automatically.",
+    )
+    content: str = Field(
+        ...,
+        description="Text content to write to the file.",
+    )
+
+
+class ReplacementChunk(BaseModel):
+    target: str = Field(
+        ...,
+        description="Exact string to find. Must match precisely, including whitespace.",
+    )
+    replacement: str = Field(
+        ...,
+        description="Content to replace the target with.",
+    )
+    start_line: Optional[int] = Field(
+        None,
+        description="Narrow the search to lines at or after this (1-indexed).",
+        ge=1,
+    )
+    end_line: Optional[int] = Field(
+        None,
+        description="Narrow the search to lines at or before this (1-indexed).",
+        ge=1,
+    )
+    allow_multiple: bool = Field(
+        False,
+        description="If true, replaces all occurrences. If false, errors when multiple matches are found.",
+    )
+
+
+class ReplaceRequest(BaseModel):
+    path: str = Field(
+        ...,
+        description="Path to the file to modify.",
+    )
+    replacements: list[ReplacementChunk] = Field(
+        ...,
+        description="List of find-and-replace operations to apply sequentially.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Background process management
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BackgroundProcess:
+    id: str
+    command: str
+    process: asyncio.subprocess.Process
+    output: list[dict] = field(default_factory=list)
+    status: str = "running"
+    exit_code: Optional[int] = None
+    output_truncated: bool = False
+    drain_task: Optional[asyncio.Task] = field(default=None, repr=False)
+    finished_at: Optional[float] = field(default=None, repr=False)
+
+
+_processes: dict[str, BackgroundProcess] = {}
+_EXPIRY_SECONDS = 300  # auto-clean finished processes after 5 min
+
+
+async def _drain_output(background_process: BackgroundProcess):
+    """Read stdout and stderr concurrently into the output buffer."""
+    async def read_stream(stream, label):
+        async for line in stream:
+            background_process.output.append(
+                {"type": label, "data": line.decode(errors="replace")}
+            )
+            if len(background_process.output) > MAX_OUTPUT_LINES:
+                background_process.output = background_process.output[-MAX_OUTPUT_LINES:]
+                background_process.output_truncated = True
+
+    await asyncio.gather(
+        read_stream(background_process.process.stdout, "stdout"),
+        read_stream(background_process.process.stderr, "stderr"),
+    )
+    await background_process.process.wait()
+    background_process.exit_code = background_process.process.returncode
+    background_process.status = "done"
+    background_process.finished_at = time.time()
+
+
+def _cleanup_expired():
+    """Remove finished processes that have expired."""
+    now = time.time()
+    expired = [
+        process_id
+        for process_id, background_process in _processes.items()
+        if background_process.finished_at
+        and now - background_process.finished_at > _EXPIRY_SECONDS
+    ]
+    for process_id in expired:
+        del _processes[process_id]
+
+
+def _get_process(process_id: str) -> BackgroundProcess:
+    _cleanup_expired()
+    background_process = _processes.get(process_id)
+    if not background_process:
+        raise HTTPException(status_code=404, detail="Process not found")
+    return background_process
+
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 @app.get(
     "/health",
@@ -87,6 +210,157 @@ class ExecResponse(BaseModel):
 async def health():
     return {"status": "ok"}
 
+
+# ---------------------------------------------------------------------------
+# Files
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/files/list",
+    summary="List directory contents",
+    description="Return a structured listing of files and directories at the given path.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        404: {"description": "Directory not found."},
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def list_files(
+    directory: str = Query(".", description="Directory path to list."),
+):
+    target = os.path.abspath(directory)
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=404, detail="Directory not found")
+
+    entries = []
+    for name in sorted(os.listdir(target)):
+        full_path = os.path.join(target, name)
+        try:
+            file_stat = os.stat(full_path)
+            entries.append(
+                {
+                    "name": name,
+                    "type": "directory" if os.path.isdir(full_path) else "file",
+                    "size": file_stat.st_size,
+                    "modified": file_stat.st_mtime,
+                }
+            )
+        except OSError:
+            continue
+
+    return {"dir": target, "entries": entries}
+
+
+@app.get(
+    "/files/read",
+    summary="Read a file",
+    description="Return the contents of a file as JSON. Text files return a content string; binary files return base64-encoded content. Optionally specify a line range for text files.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        404: {"description": "File not found."},
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def read_file(
+    path: str = Query(..., description="Path to the file to read."),
+    start_line: Optional[int] = Query(None, description="First line to return (1-indexed, inclusive).", ge=1),
+    end_line: Optional[int] = Query(None, description="Last line to return (1-indexed, inclusive).", ge=1),
+):
+    target = os.path.abspath(path)
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        with open(target, "r", errors="strict") as text_file:
+            lines = text_file.readlines()
+    except (UnicodeDecodeError, ValueError):
+        # Binary file — return base64
+        with open(target, "rb") as binary_file:
+            raw = binary_file.read()
+        return {
+            "path": target,
+            "encoding": "base64",
+            "size": len(raw),
+            "content": base64.b64encode(raw).decode("ascii"),
+        }
+
+    start = (start_line or 1) - 1
+    end = end_line or len(lines)
+    return {
+        "path": target,
+        "total_lines": len(lines),
+        "content": "".join(lines[start:end]),
+    }
+
+
+@app.post(
+    "/files/write",
+    summary="Write a file",
+    description="Write text content to a file. Creates parent directories automatically. Overwrites if the file already exists.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def write_file(request: WriteRequest):
+    target = os.path.abspath(request.path)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w") as output_file:
+        output_file.write(request.content)
+    return {"path": target, "size": len(request.content.encode())}
+
+
+@app.post(
+    "/files/replace",
+    summary="Replace content in a file",
+    description="Find and replace exact strings in a file. Supports multiple replacements in one call with optional line range narrowing.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        404: {"description": "File not found."},
+        400: {"description": "Target string not found or ambiguous match."},
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def replace_file_content(request: ReplaceRequest):
+    target = os.path.abspath(request.path)
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    with open(target, "r", errors="replace") as text_file:
+        content = text_file.read()
+
+    for chunk in request.replacements:
+        if chunk.start_line or chunk.end_line:
+            lines = content.splitlines(keepends=True)
+            start = (chunk.start_line or 1) - 1
+            end = chunk.end_line or len(lines)
+            search_region = "".join(lines[start:end])
+        else:
+            search_region = content
+
+        count = search_region.count(chunk.target)
+        if count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Target string not found: {chunk.target[:100]!r}",
+            )
+        if count > 1 and not chunk.allow_multiple:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Found {count} occurrences of target string but allow_multiple is false",
+            )
+
+        if chunk.start_line or chunk.end_line:
+            new_region = search_region.replace(chunk.target, chunk.replacement)
+            lines[start:end] = [new_region]
+            content = "".join(lines)
+        else:
+            content = content.replace(chunk.target, chunk.replacement)
+
+    with open(target, "w") as output_file:
+        output_file.write(content)
+
+    return {"path": target, "size": len(content.encode())}
 
 
 # Temporary links: {token: (path, expiry_timestamp)}
@@ -108,9 +382,6 @@ async def get_file_link(
     path: str = Query(..., description="Absolute path to the file."),
     request: Request = None,
 ):
-    import time
-    import uuid
-
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -126,8 +397,6 @@ async def get_file_link(
     include_in_schema=False,
 )
 async def download_file(token: str):
-    import time
-
     entry = _download_links.pop(token, None)
     if not entry:
         raise HTTPException(status_code=404, detail="Invalid or expired download link")
@@ -152,7 +421,7 @@ async def download_file(token: str):
     },
 )
 async def upload_file(
-    dir: str = Query(..., description="Destination directory for the file."),
+    directory: str = Query(..., description="Destination directory for the file."),
     url: Optional[str] = Query(None, description="URL to download the file from. If omitted, expects a multipart file upload."),
     file: Optional[UploadFile] = File(None, description="The file to upload (if no URL provided)."),
 ):
@@ -161,9 +430,9 @@ async def upload_file(
         from urllib.parse import urlparse
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-        content = resp.content
+            response = await client.get(url)
+            response.raise_for_status()
+        content = response.content
         filename = os.path.basename(urlparse(url).path) or "download"
     elif file:
         content = await file.read()
@@ -171,10 +440,10 @@ async def upload_file(
     else:
         raise HTTPException(status_code=400, detail="Provide either 'url' or a file upload.")
 
-    os.makedirs(dir, exist_ok=True)
-    path = os.path.join(dir, filename)
-    with open(path, "wb") as f:
-        f.write(content)
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, filename)
+    with open(path, "wb") as output_file:
+        output_file.write(content)
     return {"path": path, "size": len(content)}
 
 
@@ -188,14 +457,11 @@ async def upload_file(
     },
 )
 async def create_upload_link(
-    dir: str = Query(..., description="Destination directory for the uploaded file."),
+    directory: str = Query(..., description="Destination directory for the uploaded file."),
     request: Request = None,
 ):
-    import time
-    import uuid
-
     token = uuid.uuid4().hex
-    _upload_links[token] = (dir, time.time() + 300)
+    _upload_links[token] = (directory, time.time() + 300)
 
     base_url = str(request.base_url).rstrip("/")
     return {"url": f"{base_url}/files/upload/{token}"}
@@ -207,8 +473,6 @@ async def create_upload_link(
     include_in_schema=False,
 )
 async def upload_page(token: str):
-    import time
-
     entry = _upload_links.get(token)
     if not entry or time.time() > entry[1]:
         return HTMLResponse("Link expired.", status_code=404)
@@ -229,23 +493,47 @@ async def upload_file_via_link(
     token: str,
     file: UploadFile = File(..., description="The file to upload."),
 ):
-    import time
-
     entry = _upload_links.pop(token, None)
     if not entry:
         raise HTTPException(status_code=404, detail="Invalid or expired upload link")
 
-    dir, expiry = entry
+    directory, expiry = entry
     if time.time() > expiry:
         raise HTTPException(status_code=404, detail="Upload link expired")
 
     filename = file.filename or "upload"
-    os.makedirs(dir, exist_ok=True)
-    path = os.path.join(dir, filename)
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, filename)
     content = await file.read()
-    with open(path, "wb") as f:
-        f.write(content)
+    with open(path, "wb") as output_file:
+        output_file.write(content)
     return {"path": path, "size": len(content)}
+
+
+# ---------------------------------------------------------------------------
+# Execute
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/execute",
+    summary="List running commands",
+    description="Returns a list of all tracked background processes, including running, done, and killed.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def list_processes():
+    _cleanup_expired()
+    return [
+        {
+            "id": background_process.id,
+            "command": background_process.command,
+            "status": background_process.status,
+            "exit_code": background_process.exit_code,
+        }
+        for background_process in _processes.values()
+    ]
 
 
 @app.post(
@@ -253,64 +541,150 @@ async def upload_file_via_link(
     summary="Execute a command",
     description=_EXECUTE_DESCRIPTION,
     dependencies=[Depends(verify_api_key)],
-    response_model=ExecResponse,
     responses={
         401: {"description": "Invalid or missing API key."},
     },
 )
 async def execute(
-    req: ExecRequest,
-    stream: bool = Query(
-        False,
-        description="Stream output as JSONL (application/x-ndjson) instead of waiting for completion.",
+    request: ExecRequest,
+    wait: Optional[float] = Query(
+        None,
+        description="Seconds to wait for the command to finish before returning. If the command completes in time, output is included inline. Null to return immediately.",
+        ge=0,
+        le=300,
     ),
 ):
-    if stream:
-        return _stream_response(req)
-
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            req.command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=req.timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return ExecResponse(
-            exit_code=-1,
-            stdout="",
-            stderr=f"Command timed out after {req.timeout}s",
-        )
-
-    return ExecResponse(
-        exit_code=proc.returncode or 0,
-        stdout=stdout.decode(errors="replace"),
-        stderr=stderr.decode(errors="replace"),
+    subprocess_env = {**os.environ, **request.env} if request.env else None
+    process = await asyncio.create_subprocess_shell(
+        request.command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE,
+        cwd=request.cwd,
+        env=subprocess_env,
     )
 
+    process_id = uuid.uuid4().hex[:12]
+    background_process = BackgroundProcess(
+        id=process_id, command=request.command, process=process
+    )
+    background_process.drain_task = asyncio.create_task(
+        _drain_output(background_process)
+    )
+    _processes[process_id] = background_process
 
-def _stream_response(req: ExecRequest):
-    async def generate():
-        proc = await asyncio.create_subprocess_shell(
-            req.command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    if wait is not None:
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(background_process.drain_task), timeout=wait
+            )
+        except asyncio.TimeoutError:
+            pass
 
-        async def read_stream(s, label):
-            async for line in s:
-                yield json.dumps(
-                    {"type": label, "data": line.decode(errors="replace")}
-                ) + "\n"
+    output = background_process.output[:]
+    background_process.output.clear()
 
-        async for chunk in read_stream(proc.stdout, "stdout"):
-            yield chunk
-        async for chunk in read_stream(proc.stderr, "stderr"):
-            yield chunk
+    return {
+        "id": process_id,
+        "command": request.command,
+        "status": background_process.status,
+        "exit_code": background_process.exit_code,
+        "output": output,
+    }
 
-        await proc.wait()
-        yield json.dumps({"type": "exit", "data": proc.returncode}) + "\n"
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+@app.get(
+    "/execute/{process_id}/status",
+    summary="Get command status and output",
+    description="Returns new output since the last poll, process status, and exit code. Output is drained on read to keep memory bounded.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        404: {"description": "Process not found."},
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def get_status(
+    process_id: str,
+    wait: Optional[float] = Query(
+        None,
+        description="Seconds to wait for the process to finish before returning. Returns early if the process exits. Null to return immediately.",
+        ge=0,
+        le=300,
+    ),
+):
+    background_process = _get_process(process_id)
+
+    if wait and background_process.status == "running":
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(background_process.drain_task), timeout=wait
+            )
+        except asyncio.TimeoutError:
+            pass
+
+    # Drain the buffer — return and clear
+    output = background_process.output[:]
+    truncated = background_process.output_truncated
+    background_process.output.clear()
+    background_process.output_truncated = False
+
+    return {
+        "id": background_process.id,
+        "command": background_process.command,
+        "status": background_process.status,
+        "exit_code": background_process.exit_code,
+        "output": output,
+        "truncated": truncated,
+    }
+
+
+@app.post(
+    "/execute/{process_id}/input",
+    summary="Send input to a running command",
+    description="Write text to the process's stdin. Include newline characters as needed.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        404: {"description": "Process not found."},
+        400: {"description": "Process has already exited or stdin is closed."},
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def send_input(process_id: str, body: InputRequest):
+    background_process = _get_process(process_id)
+    if background_process.status != "running":
+        raise HTTPException(status_code=400, detail="Process has already exited")
+
+    try:
+        background_process.process.stdin.write(body.input.encode())
+        await background_process.process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        raise HTTPException(status_code=400, detail="Process stdin is closed")
+
+    return {"status": "ok"}
+
+
+@app.delete(
+    "/execute/{process_id}",
+    summary="Kill a running command",
+    description="Terminate the process. Sends SIGTERM by default for graceful shutdown. Use force=true to send SIGKILL.",
+    dependencies=[Depends(verify_api_key)],
+    responses={
+        404: {"description": "Process not found."},
+        401: {"description": "Invalid or missing API key."},
+    },
+)
+async def kill_process(
+    process_id: str,
+    force: bool = Query(False, description="Send SIGKILL instead of SIGTERM."),
+):
+    background_process = _get_process(process_id)
+    if background_process.status == "running":
+        if force:
+            background_process.process.kill()
+        else:
+            background_process.process.send_signal(signal.SIGTERM)
+        await background_process.process.wait()
+        background_process.status = "killed"
+        background_process.exit_code = background_process.process.returncode
+    del _processes[process_id]
+    return {"status": "killed"}
