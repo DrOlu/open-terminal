@@ -66,6 +66,18 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def normalize_null_query_params(request: Request, call_next):
+    """Strip query parameters whose value is the literal string 'null'."""
+    from urllib.parse import urlencode
+
+    raw_params = request.query_params.multi_items()
+    cleaned = [(k, v) for k, v in raw_params if v.lower() != "null"]
+    if len(cleaned) != len(raw_params):
+        request.scope["query_string"] = urlencode(cleaned).encode("utf-8")
+    return await call_next(request)
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
