@@ -204,6 +204,7 @@ def _get_process(process_id: str) -> BackgroundProcess:
 
 @app.get(
     "/health",
+    operation_id="health_check",
     summary="Health check",
     description="Returns service status. No authentication required.",
 )
@@ -217,6 +218,7 @@ async def health():
 
 @app.get(
     "/files/list",
+    operation_id="list_files",
     summary="List directory contents",
     description="Return a structured listing of files and directories at the given path.",
     dependencies=[Depends(verify_api_key)],
@@ -253,6 +255,7 @@ async def list_files(
 
 @app.get(
     "/files/read",
+    operation_id="read_file",
     summary="Read a file",
     description="Return the contents of a file as JSON. Text files return a content string; binary files return base64-encoded content. Optionally specify a line range for text files.",
     dependencies=[Depends(verify_api_key)],
@@ -295,6 +298,7 @@ async def read_file(
 
 @app.post(
     "/files/write",
+    operation_id="write_file",
     summary="Write a file",
     description="Write text content to a file. Creates parent directories automatically. Overwrites if the file already exists.",
     dependencies=[Depends(verify_api_key)],
@@ -312,6 +316,7 @@ async def write_file(request: WriteRequest):
 
 @app.post(
     "/files/replace",
+    operation_id="replace_file_content",
     summary="Replace content in a file",
     description="Find and replace exact strings in a file. Supports multiple replacements in one call with optional line range narrowing.",
     dependencies=[Depends(verify_api_key)],
@@ -370,6 +375,7 @@ _upload_links: dict[str, tuple[str, float]] = {}
 
 @app.get(
     "/files/download/link",
+    operation_id="create_download_link",
     summary="Get a file download link",
     description="Returns a temporary download URL for a file. Link expires after 5 minutes and requires no authentication to use.",
     dependencies=[Depends(verify_api_key)],
@@ -413,6 +419,7 @@ async def download_file(token: str):
 
 @app.post(
     "/files/upload",
+    operation_id="upload_file",
     summary="Upload a file",
     description="Save a file to the specified path. Provide a `url` to fetch remotely, or send the file directly via multipart form data.",
     dependencies=[Depends(verify_api_key)],
@@ -449,6 +456,7 @@ async def upload_file(
 
 @app.post(
     "/files/upload/link",
+    operation_id="create_upload_link",
     summary="Create an upload link",
     description="Generate a temporary, unauthenticated upload URL. Link expires after 5 minutes.",
     dependencies=[Depends(verify_api_key)],
@@ -516,6 +524,7 @@ async def upload_file_via_link(
 
 @app.get(
     "/execute",
+    operation_id="list_processes",
     summary="List running commands",
     description="Returns a list of all tracked background processes, including running, done, and killed.",
     dependencies=[Depends(verify_api_key)],
@@ -538,6 +547,7 @@ async def list_processes():
 
 @app.post(
     "/execute",
+    operation_id="run_command",
     summary="Execute a command",
     description=_EXECUTE_DESCRIPTION,
     dependencies=[Depends(verify_api_key)],
@@ -595,6 +605,7 @@ async def execute(
 
 @app.get(
     "/execute/{process_id}/status",
+    operation_id="get_process_status",
     summary="Get command status and output",
     description="Returns new output since the last poll, process status, and exit code. Output is drained on read to keep memory bounded.",
     dependencies=[Depends(verify_api_key)],
@@ -640,6 +651,7 @@ async def get_status(
 
 @app.post(
     "/execute/{process_id}/input",
+    operation_id="send_process_input",
     summary="Send input to a running command",
     description="Write text to the process's stdin. Include newline characters as needed.",
     dependencies=[Depends(verify_api_key)],
@@ -665,6 +677,7 @@ async def send_input(process_id: str, body: InputRequest):
 
 @app.delete(
     "/execute/{process_id}",
+    operation_id="kill_process",
     summary="Kill a running command",
     description="Terminate the process. Sends SIGTERM by default for graceful shutdown. Use force=true to send SIGKILL.",
     dependencies=[Depends(verify_api_key)],
