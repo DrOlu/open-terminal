@@ -1,6 +1,8 @@
 # ⚡ Open Terminal
 
-A lightweight API for running shell commands remotely — with real-time streaming and secure access.
+A lightweight API for running shell commands remotely — designed for AI agents and automation.
+
+The container ships with a full toolkit (Python, git, jq, curl, build tools, and more) and runs as a non-root user with passwordless `sudo`.
 
 ## Getting Started
 
@@ -19,93 +21,34 @@ docker build -t open-terminal .
 docker run -p 8000:8000 open-terminal
 ```
 
-### Bare Metal (if you like to live dangerously)
+### Bare Metal
 
 ```bash
 pip install open-terminal
 open-terminal run --host 0.0.0.0 --port 8000 --api-key your-secret-key
 ```
 
-| Option | Default | Env Var | Description |
-|---|---|---|---|
-| `--host` | `0.0.0.0` | — | Bind address |
-| `--port` | `8000` | — | Bind port |
-| `--api-key` | auto-generated | `OPEN_TERMINAL_API_KEY` | Bearer API key |
+## Quick Examples
 
-## Usage
-
-### Run a Command
+**Run a command:**
 
 ```bash
-curl -X POST http://localhost:8000/execute \
+curl -X POST http://localhost:8000/execute?wait=5 \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
   -d '{"command": "echo hello"}'
 ```
 
-### Stream Output
+**Upload a file:**
 
 ```bash
-curl -X POST "http://localhost:8000/execute?stream=true" \
-  -H "Authorization: Bearer <api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"command": "for i in 1 2 3; do echo $i; sleep 1; done"}'
-```
-
-Output streams as JSONL:
-
-```jsonl
-{"type": "stdout", "data": "1\n"}
-{"type": "stdout", "data": "2\n"}
-{"type": "stdout", "data": "3\n"}
-{"type": "exit", "data": 0}
-```
-
-### Upload a File
-
-**From URL:**
-```bash
-curl -X POST "http://localhost:8000/files/upload?url=https://example.com/data.csv&dir=/tmp" \
+curl -X POST "http://localhost:8000/files/upload?directory=/home/user&url=https://example.com/data.csv" \
   -H "Authorization: Bearer <api-key>"
-```
-
-**Direct upload:**
-```bash
-curl -X POST "http://localhost:8000/files/upload?dir=/tmp" \
-  -H "Authorization: Bearer <api-key>" \
-  -F "file=@local_file.csv"
-```
-
-**Via temporary link (no auth needed to upload):**
-```bash
-# 1. Generate an upload link
-curl -X POST "http://localhost:8000/files/upload/link?dir=/tmp" \
-  -H "Authorization: Bearer <api-key>"
-# → {"url": "http://localhost:8000/files/upload/a1b2c3d4..."}
-
-# 2. Upload to the link (no auth required)
-curl -X POST "http://localhost:8000/files/upload/a1b2c3d4..." \
-  -F "file=@local_file.csv"
-```
-
-Filename is automatically derived from the uploaded file or URL.
-
-### Download a File
-
-```bash
-curl "http://localhost:8000/files/download/link?path=/tmp/output.csv" \
-  -H "Authorization: Bearer <api-key>"
-```
-
-Returns a temporary download link (valid for 5 minutes, no auth needed):
-
-```json
-{"url": "http://localhost:8000/files/download/a1b2c3d4..."}
 ```
 
 ## API Docs
 
-Interactive API documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs).
+Full interactive API documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
 ## License
 
