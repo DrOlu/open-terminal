@@ -316,28 +316,36 @@ async def health():
 )
 async def list_files(
     directory: str = Query(".", description="Directory path to list."),
+    max_entries: int = Query(500, description="Maximum entries to return.", ge=1, le=5000),
 ):
     target = os.path.abspath(directory)
     if not os.path.isdir(target):
         raise HTTPException(status_code=404, detail="Directory not found")
 
-    entries = []
-    for name in sorted(os.listdir(target)):
-        full_path = os.path.join(target, name)
-        try:
-            file_stat = os.stat(full_path)
-            entries.append(
-                {
-                    "name": name,
-                    "type": "directory" if os.path.isdir(full_path) else "file",
-                    "size": file_stat.st_size,
-                    "modified": file_stat.st_mtime,
-                }
-            )
-        except OSError:
-            continue
+    def _list_sync():
+        entries = []
+        truncated = False
+        for name in sorted(os.listdir(target)):
+            if len(entries) >= max_entries:
+                truncated = True
+                break
+            full_path = os.path.join(target, name)
+            try:
+                file_stat = os.stat(full_path)
+                entries.append(
+                    {
+                        "name": name,
+                        "type": "directory" if os.path.isdir(full_path) else "file",
+                        "size": file_stat.st_size,
+                        "modified": file_stat.st_mtime,
+                    }
+                )
+            except OSError:
+                continue
+        return entries, truncated
 
-    return {"dir": target, "entries": entries}
+    entries, truncated = await asyncio.to_thread(_list_sync)
+    return {"dir": target, "entries": entries, "truncated": truncated}
 
 
 @app.get(
