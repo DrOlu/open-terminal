@@ -1,3 +1,5 @@
+import os
+
 import click
 import uvicorn
 
@@ -24,15 +26,23 @@ BANNER = r"""
 @click.option("--host", default="0.0.0.0", help="Bind host")
 @click.option("--port", default=8000, type=int, help="Bind port")
 @click.option(
+    "--cwd",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True, path_type=str),
+    default=None,
+    help="Working directory for the server process.",
+)
+@click.option(
     "--api-key",
     default="",
     envvar="OPEN_TERMINAL_API_KEY",
     help="Bearer API key (or set OPEN_TERMINAL_API_KEY env var)",
 )
-def run(host: str, port: int, api_key: str):
+def run(host: str, port: int, cwd: str | None, api_key: str):
     """Start the sandbox API server."""
-    import os
     import secrets
+
+    if cwd:
+        os.chdir(cwd)
 
     generated = not api_key
     if not api_key:
@@ -59,8 +69,17 @@ def run(host: str, port: int, api_key: str):
 )
 @click.option("--host", default="0.0.0.0", help="Bind host (streamable-http only)")
 @click.option("--port", default=8000, type=int, help="Bind port (streamable-http only)")
-def mcp(transport: str, host: str, port: int):
+@click.option(
+    "--cwd",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True, path_type=str),
+    default=None,
+    help="Working directory for the server process.",
+)
+def mcp(transport: str, host: str, port: int, cwd: str | None):
     """Start the MCP server (requires 'pip install open-terminal[mcp]')."""
+    if cwd:
+        os.chdir(cwd)
+
     try:
         from open_terminal.mcp_server import mcp as mcp_server
     except ImportError:
