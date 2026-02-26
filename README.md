@@ -73,6 +73,16 @@ That's it — your AI assistants now have access to the terminal, and you can br
 
 Full interactive API documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs) once your instance is running.
 
+## Star History
+
+<a href="https://star-history.com/#open-webui/open-terminal&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=open-webui/open-terminal&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=open-webui/open-terminal&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=open-webui/open-terminal&type=Date" />
+  </picture>
+</a>
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
