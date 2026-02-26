@@ -3,74 +3,48 @@
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version tag (e.g., v1.0.0)"
-        required: true
-        default: "v1.0.0"
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        python-version: ["3.12"]
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
     
-    - name: Setup Python
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: "3.12"
     
     - name: Install dependencies
+      shell: pwsh
       run: |
         python -m pip install --upgrade pip
         pip install nuitka zstandard ordered-set
-        pip install -e .
+        pip install .
     
-    - name: Create entry point script
+    - name: Create entry point
       shell: pwsh
       run: |
-        @"
-        #!/usr/bin/env python3
-        import sys
-        from open_terminal.cli import main
-        if __name__ == "__main__":
-            sys.exit(main())
-        "@ | Set-Content -Path main.py -Encoding UTF8
+        $content = @"
+import sys
+from open_terminal.cli import main
+if __name__ == "__main__":
+    sys.exit(main())
+"@
+        Set-Content -Path main.py -Value $content
     
-    - name: Build Windows executable
-      shell: cmd
+    - name: Build with Nuitka
+      shell: pwsh
       run: |
-        python -m nuitka --standalone --onefile ^
-          --enable-plugin=fastapi ^
-          --include-package=open_terminal ^
-          --include-package=fastapi ^
-          --include-package=uvicorn ^
-          --include-package=starlette ^
-          --include-package=pydantic ^
-          --include-package=websockets ^
-          --include-package=aiofiles ^
-          --windows-console-mode=force ^
-          --windows-onefile-tempdir-spec="%%TEMP%%\open-terminal" ^
-          --output-filename=open-terminal ^
-          main.py
-      timeout-minutes: 30
+        python -m nuitka --standalone --onefile --enable-plugin=fastapi --include-package=open_terminal --windows-console-mode=force --output-filename=open-terminal main.py
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: open-terminal-windows-amd64
+        name: open-terminal-windows
         path: open-terminal.exe
-        retention-days: 30
     
-    - name: Test executable
-      shell: cmd
-      run: |
-        open-terminal.exe --help"
+    - name: Test
+      shell: pwsh
+      run: ./open-terminal.exe --version || ./open-terminal.exe --help"
