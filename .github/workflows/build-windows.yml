@@ -1,50 +1,19 @@
-"name: Build Windows Binary
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
+"name: Build Windows
+on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
-    
-    - name: Install dependencies
-      shell: pwsh
-      run: |
-        python -m pip install --upgrade pip
-        pip install nuitka zstandard ordered-set
-        pip install .
-    
-    - name: Create entry point
-      shell: pwsh
-      run: |
-        $content = @"
-import sys
-from open_terminal.cli import main
-if __name__ == "__main__":
-    sys.exit(main())
-"@
-        Set-Content -Path main.py -Value $content
-    
-    - name: Build with Nuitka
-      shell: pwsh
-      run: |
-        python -m nuitka --standalone --onefile --enable-plugin=fastapi --include-package=open_terminal --windows-console-mode=force --output-filename=open-terminal main.py
-    
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: open-terminal-windows
-        path: open-terminal.exe
-    
-    - name: Test
-      shell: pwsh
-      run: ./open-terminal.exe --version || ./open-terminal.exe --help"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller open-terminal
+      - run: |
+          echo "from open_terminal.cli import main; main()" > main.py
+          pyinstaller --onefile --name open-terminal main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-terminal.exe
+          path: dist/open-terminal.exe
+          retention-days: 30"
