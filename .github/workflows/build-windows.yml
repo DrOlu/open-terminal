@@ -1,4 +1,4 @@
-name: Build Windows Binary
+"name: Build Windows Binary
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     
-    - name: Setup Python ${{ matrix.python-version }}
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
@@ -45,7 +45,7 @@ jobs:
             sys.exit(main())
         "@ | Set-Content -Path main.py -Encoding UTF8
     
-    - name: Build Windows executable with Nuitka
+    - name: Build Windows executable
       shell: cmd
       run: |
         python -m nuitka --standalone --onefile ^
@@ -73,26 +73,4 @@ jobs:
     - name: Test executable
       shell: cmd
       run: |
-        open-terminal.exe --help
-    
-    - name: Create Release
-      if: github.event_name == "workflow_dispatch"
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.event.inputs.version }}
-        release_name: Release ${{ github.event.inputs.version }}
-        draft: false
-        prerelease: false
-    
-    - name: Upload Release Asset
-      if: github.event_name == "workflow_dispatch"
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./open-terminal.exe
-        asset_name: open-terminal-windows-amd64.exe
-        asset_content_type: application/octet-stream
+        open-terminal.exe --help"
