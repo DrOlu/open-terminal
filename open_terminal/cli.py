@@ -37,7 +37,13 @@ BANNER = r"""
     envvar="OPEN_TERMINAL_API_KEY",
     help="Bearer API key (or set OPEN_TERMINAL_API_KEY env var)",
 )
-def run(host: str, port: int, cwd: str | None, api_key: str):
+@click.option(
+    "--cors-allowed-origins",
+    default="*",
+    envvar="OPEN_TERMINAL_CORS_ALLOWED_ORIGINS",
+    help="Allowed CORS origins, comma-separated (default: * for all)",
+)
+def run(host: str, port: int, cwd: str | None, api_key: str, cors_allowed_origins: str):
     """Start the sandbox API server."""
     import secrets
 
@@ -49,6 +55,7 @@ def run(host: str, port: int, cwd: str | None, api_key: str):
         api_key = secrets.token_urlsafe(24)
 
     os.environ["OPEN_TERMINAL_API_KEY"] = api_key
+    os.environ["OPEN_TERMINAL_CORS_ALLOWED_ORIGINS"] = cors_allowed_origins
 
     click.echo(BANNER)
     if generated:

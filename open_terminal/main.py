@@ -24,7 +24,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
-from open_terminal.env import API_KEY, BINARY_FILE_MIME_PREFIXES, LOG_DIR
+from open_terminal.env import API_KEY, BINARY_FILE_MIME_PREFIXES, CORS_ALLOWED_ORIGINS, LOG_DIR
 
 
 def get_system_info() -> str:
@@ -61,7 +61,7 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in CORS_ALLOWED_ORIGINS.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
