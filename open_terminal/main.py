@@ -394,7 +394,7 @@ async def list_files(
     "/files/read",
     operation_id="read_file",
     summary="Read a file",
-    description="Return the contents of a file. Text files return JSON with a content string. Supported binary types (configurable, default: image/*) return the raw binary with the appropriate Content-Type. Unsupported binary types are rejected. Optionally specify a line range for text files.",
+    description="Return the contents of a file. Text files return JSON with a content string. Supported binary types (configurable, default: image/*) return the raw binary with the appropriate Content-Type. Unsupported binary types are rejected. Optionally specify a line range for text files. This returns file content to you but does not show anything to the user. Use display_file to let the user see a file.",
     dependencies=[Depends(verify_api_key)],
     responses={
         404: {"description": "File not found."},
@@ -429,9 +429,7 @@ async def read_file(
         # Extract text from PDFs so LLMs can read the content
         if mime == "application/pdf":
             reader = await asyncio.to_thread(PdfReader, target)
-            text = "\n".join(
-                page.extract_text() or "" for page in reader.pages
-            )
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
             lines = text.splitlines(keepends=True)
             start = (start_line or 1) - 1
             end = end_line or len(lines)
